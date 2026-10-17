@@ -522,6 +522,13 @@ mod tests {
         )
     }
 
+    fn property(ed: &WorldEditor<'_>, x: i32, y: i32, z: i32, key: &str) -> Option<Value> {
+        match ed.block_properties_absolute(x, y, z)? {
+            Value::Compound(properties) => properties.get(key).cloned(),
+            _ => None,
+        }
+    }
+
     fn fill_rock(editor: &mut WorldEditor, cx: i32, cz: i32) {
         for x in cx - 12..=cx + 12 {
             for z in cz - 12..=cz + 12 {
@@ -644,8 +651,7 @@ mod tests {
         assert_eq!(Some(IRON_BARS), ed.get_block_absolute(17, 0, 17));
         assert_eq!(
             Some(fastnbt::Value::String("east".into())),
-            ed.block_properties_absolute(access.0, 1, access.1)
-                .and_then(|p| p.get("facing").cloned())
+            property(&ed, access.0, 1, access.1, "facing")
         );
     }
 
@@ -678,13 +684,11 @@ mod tests {
         assert_eq!(Some(IRON_DOOR), ed.get_block_absolute(25, surface + 2, 20));
         assert_eq!(
             Some(fastnbt::Value::String("lower".into())),
-            ed.block_properties_absolute(25, surface + 1, 20)
-                .and_then(|p| p.get("half").cloned())
+            property(&ed, 25, surface + 1, 20, "half")
         );
         assert_eq!(
             Some(fastnbt::Value::String("east".into())),
-            ed.block_properties_absolute(25, surface + 1, 20)
-                .and_then(|p| p.get("facing").cloned())
+            property(&ed, 25, surface + 1, 20, "facing")
         );
     }
 

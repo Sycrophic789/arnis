@@ -89,7 +89,7 @@ pub fn place(editor: &mut WorldEditor, site: MoonSite) {
 
     // Central pressurized dome: concentric glass shell rings leave a walkable interior.
     for layer in 1..=6 {
-        let radius = 6 - (layer - 1) / 2;
+        let radius: i32 = 6 - (layer - 1) / 2;
         for dx in -radius..=radius {
             for dz in -radius..=radius {
                 let edge = dx.abs() == radius || dz.abs() == radius;
@@ -133,7 +133,7 @@ pub fn place(editor: &mut WorldEditor, site: MoonSite) {
     }
 
     // Airlock to the south with a correctly paired iron pressure door.
-    for dx in -1..=1 {
+    for dx in -1i32..=1 {
         for dz in 7..=9 {
             if dx.abs() == 1 || dz == 7 || dz == 9 {
                 for dy in 1..=3 {
@@ -171,8 +171,8 @@ pub fn place(editor: &mut WorldEditor, site: MoonSite) {
     for side in [-1, 1] {
         let panel_x = x + side * 10;
         let panel_z = z - 8;
-        for dx in -3..=3 {
-            for dz in -1..=1 {
+        for dx in -3i32..=3 {
+            for dz in -1i32..=1 {
                 let border = dx.abs() == 3 || dz.abs() == 1;
                 editor.set_block_absolute(
                     if border {
@@ -232,6 +232,13 @@ mod tests {
         )
     }
 
+    fn property(ed: &WorldEditor<'_>, x: i32, y: i32, z: i32, key: &str) -> Option<fastnbt::Value> {
+        match ed.block_properties_absolute(x, y, z)? {
+            fastnbt::Value::Compound(properties) => properties.get(key).cloned(),
+            _ => None,
+        }
+    }
+
     #[test]
     fn moon_base_is_moon_only_and_requires_space() {
         let bbox = XZBBox::rect_from_min_max(0, 0, 40, 40).unwrap();
@@ -272,8 +279,7 @@ mod tests {
         );
         assert_eq!(
             Some(fastnbt::Value::String("upper".into())),
-            ed.block_properties_absolute(site.x, site.deck_y + 2, site.z + 7)
-                .and_then(|p| p.get("half").cloned())
+            property(&ed, site.x, site.deck_y + 2, site.z + 7, "half")
         );
     }
 
