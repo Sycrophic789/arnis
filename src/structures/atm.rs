@@ -391,7 +391,7 @@ mod tests {
     fn building_candidates_keep_entrances_clear() {
         let bbox = XZBBox::rect_from_min_max(0, 0, 40, 40).unwrap();
         let roads = CoordinateBitmap::new(&bbox);
-        let nodes = vec![
+        let nodes = [
             ProcessedNode {
                 id: 1,
                 x: 10,
