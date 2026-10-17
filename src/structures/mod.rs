@@ -1,6 +1,8 @@
 //! Generic Sponge .schem structure stamping (non-tree models such as the construction crane).
 
+pub mod atm;
 pub mod boat;
+pub mod bunker;
 pub mod car;
 pub mod crane;
 pub mod excavator;
@@ -8,6 +10,7 @@ pub mod fountain;
 pub mod helicopter;
 pub mod jetbridge;
 pub mod lighthouse;
+pub mod moon_base;
 pub mod plane;
 pub mod playground;
 pub mod schematic;

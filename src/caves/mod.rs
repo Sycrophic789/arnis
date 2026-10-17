@@ -92,7 +92,7 @@ const CARVE_THRESHOLD: f64 = 0.0;
 const CELL_W: i32 = 4;
 const CELL_H: i32 = 8;
 /// Rock the carve is allowed to replace (never bedrock, water, buildings, ores, plants).
-const CAVE_HOST: &[Block] = &[
+pub(crate) const CAVE_HOST: &[Block] = &[
     STONE,
     DEEPSLATE,
     TUFF,
