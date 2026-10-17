@@ -404,8 +404,9 @@ impl BuildingCategory {
             }
 
             // Commercial/retail
-            "commercial" | "retail" | "supermarket" | "kiosk" | "shop" | "restaurant" | "cafe"
-            | "fast_food" | "food_court" | "bar" | "pub" => BuildingCategory::Commercial,
+            "commercial" | "retail" | "supermarket" | "kiosk" | "shop" | "restaurant" => {
+                BuildingCategory::Commercial
+            }
 
             // Office buildings
             "office" => BuildingCategory::Office,
@@ -452,7 +453,7 @@ impl BuildingCategory {
             // itself only says `building=yes`.
             _ if matches!(
                 element.tags.get("amenity").map(String::as_str),
-                Some("restaurant" | "cafe" | "fast_food" | "food_court" | "bar" | "pub")
+                Some("restaurant")
             ) =>
             {
                 BuildingCategory::Commercial
