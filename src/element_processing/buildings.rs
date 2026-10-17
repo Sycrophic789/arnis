@@ -404,7 +404,7 @@ impl BuildingCategory {
             }
 
             // Commercial/retail
-            "commercial" | "retail" | "supermarket" | "kiosk" | "shop" => {
+            "commercial" | "retail" | "supermarket" | "kiosk" | "shop" | "restaurant" => {
                 BuildingCategory::Commercial
             }
 
@@ -448,6 +448,16 @@ impl BuildingCategory {
 
             // Public/civic (map to appropriate institutional)
             "public" | "government" | "civic" => BuildingCategory::School, // Use school style for generic institutional
+
+            // Amenity tags identify storefronts even when the building outline
+            // itself only says `building=yes`.
+            _ if matches!(
+                element.tags.get("amenity").map(String::as_str),
+                Some("restaurant")
+            ) =>
+            {
+                BuildingCategory::Commercial
+            }
 
             // Default for unknown types
             _ => BuildingCategory::Default,
@@ -3144,19 +3154,20 @@ fn thin_ring_cells(nodes: &[ProcessedNode]) -> Vec<(i32, i32)> {
 
 /// True when the outline carries a mapped entrance/door node.
 pub(crate) fn outline_has_mapped_entrance(element: &ProcessedWay) -> bool {
-    element
-        .nodes
-        .iter()
-        .any(|n| n.tags.contains_key("entrance") || n.tags.contains_key("door"))
+    element.nodes.iter().any(|n| {
+        n.tags.get("entrance").is_some_and(|value| value != "no")
+            || n.tags.get("door").is_some_and(|value| value != "no")
+    })
 }
 
-/// Wood species for an entrance door, matched to category and wall material.
-#[derive(Copy, Clone, PartialEq, Eq)]
+/// Entrance material, matched to building use and wall material.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum DoorStyle {
     Oak,
     Spruce,
     DarkOak,
     Birch,
+    Iron,
 }
 
 impl DoorStyle {
@@ -3166,6 +3177,7 @@ impl DoorStyle {
             DoorStyle::Spruce => SPRUCE_DOOR_LOWER,
             DoorStyle::DarkOak => DARK_OAK_DOOR_LOWER,
             DoorStyle::Birch => BIRCH_DOOR,
+            DoorStyle::Iron => IRON_DOOR,
         }
     }
 
@@ -3176,6 +3188,7 @@ impl DoorStyle {
             DoorStyle::Spruce => SPRUCE_TRAPDOOR,
             DoorStyle::DarkOak => DARK_OAK_TRAPDOOR,
             DoorStyle::Birch => BIRCH_TRAPDOOR,
+            DoorStyle::Iron => IRON_TRAPDOOR,
         }
     }
 }
@@ -3194,13 +3207,16 @@ struct EntrancePlan {
 
 fn door_style_for(category: BuildingCategory, wall_block: Block, group_seed: u64) -> DoorStyle {
     match category {
-        BuildingCategory::Industrial
-        | BuildingCategory::Warehouse
-        | BuildingCategory::Commercial
-        | BuildingCategory::Office
-        | BuildingCategory::Hotel
-        | BuildingCategory::Historic
-        | BuildingCategory::Religious => DoorStyle::DarkOak,
+        BuildingCategory::Industrial | BuildingCategory::Warehouse => DoorStyle::Iron,
+        BuildingCategory::Garage => DoorStyle::Spruce,
+        BuildingCategory::Residential => DoorStyle::Spruce,
+        BuildingCategory::Commercial | BuildingCategory::Office | BuildingCategory::Hotel => {
+            DoorStyle::DarkOak
+        }
+        BuildingCategory::School | BuildingCategory::Hospital => DoorStyle::Birch,
+        BuildingCategory::Greenhouse => DoorStyle::Birch,
+        BuildingCategory::Shed => DoorStyle::Oak,
+        BuildingCategory::Historic | BuildingCategory::Religious => DoorStyle::DarkOak,
         _ => match wall_block {
             OAK_PLANKS | OAK_LOG => DoorStyle::Spruce,
             SPRUCE_PLANKS | SPRUCE_LOG | DARK_OAK_PLANKS => DoorStyle::Oak,
@@ -3353,6 +3369,134 @@ fn plan_synthetic_entrance(
         canopy,
         lantern,
     })
+}
+
+/// Plans the preset entrance for a garage, shed, or greenhouse on a usable
+/// facade segment. Street-facing walls win when available; otherwise the
+/// longest open wall is used. The normal shared renderer supplies valid door
+/// states, paired halves, thresholds, and any ground-aware doorstep.
+fn plan_special_entrance(
+    element: &ProcessedWay,
+    config: &BuildingConfig,
+    facade: &FacadePlan,
+    building_passages: &CoordinateBitmap,
+    group_seed: u64,
+) -> Option<EntrancePlan> {
+    if !config.is_ground_level
+        || (!config.has_garage_door && !config.has_single_door)
+        || matches!(
+            config.condition,
+            BuildingCondition::Construction | BuildingCondition::Ruined
+        )
+    {
+        return None;
+    }
+
+    let mut segments: Vec<usize> = facade
+        .segments
+        .iter()
+        .enumerate()
+        .filter_map(|(i, segment)| {
+            let segment = segment.as_ref()?;
+            (segment.class != FacadeClass::Party).then_some(i)
+        })
+        .collect();
+    segments.sort_by_key(|&i| {
+        let segment = facade.segments[i].as_ref().expect("filtered segment");
+        let class_rank = match segment.class {
+            FacadeClass::Street => 0,
+            FacadeClass::Open => 1,
+            FacadeClass::Rear => 2,
+            FacadeClass::Party => 3,
+        };
+        (
+            class_rank,
+            segment.road_dist.unwrap_or(i32::MAX),
+            std::cmp::Reverse(segment.len),
+            i,
+        )
+    });
+    // Preserve the facade planner's closest-street tie-break for the primary
+    // entrance, while retaining other walls as a safe fallback if it is blocked.
+    if let Some(front) = facade.front_segment {
+        if let Some(index) = segments.iter().position(|&i| i == front) {
+            segments.swap(0, index);
+        }
+    }
+
+    let style = door_style_for(config.category, config.wall_block, group_seed);
+    for segment_index in segments {
+        let Some(segment) = facade.segments[segment_index].as_ref() else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (
+            element.nodes.get(segment_index),
+            element.nodes.get(segment_index + 1),
+        ) else {
+            continue;
+        };
+        let points: Vec<(i32, i32)> = bresenham_line(a.x, 0, a.z, b.x, 0, b.z)
+            .into_iter()
+            .map(|(x, _, z)| (x, z))
+            .collect();
+        if points.len() < 3 {
+            continue;
+        }
+
+        let available = |index: usize| {
+            let (x, z) = points[index];
+            !building_passages.contains(x, z)
+                && !facade.is_party(x, z)
+                && !config.is_photo_column(x, z)
+        };
+        let center = points.len() / 2;
+        let candidates = |min: usize, max: usize, center: usize| {
+            let mut candidates: Vec<usize> = (min..=max).collect();
+            candidates.sort_by_key(|&i| (i.abs_diff(center), i));
+            candidates
+        };
+
+        // A double garage entrance only fits on a straight, long-enough wall.
+        // If its preferred span is obstructed, continue to the next candidate
+        // or fall back to a single leaf rather than placing one in a passage.
+        let can_double = config.has_garage_door
+            && (segment.tangent.0 == 0 || segment.tangent.1 == 0)
+            && points.len() >= 4;
+        if can_double {
+            for start in candidates(1, points.len() - 3, center.saturating_sub(1)) {
+                if available(start) && available(start + 1) {
+                    let (x, z) = points[start];
+                    return Some(EntrancePlan {
+                        x,
+                        z,
+                        normal: segment.normal,
+                        tangent: segment.tangent,
+                        double: true,
+                        style,
+                        canopy: false,
+                        lantern: false,
+                    });
+                }
+            }
+        }
+
+        for index in candidates(1, points.len() - 2, center) {
+            if available(index) {
+                let (x, z) = points[index];
+                return Some(EntrancePlan {
+                    x,
+                    z,
+                    normal: segment.normal,
+                    tangent: segment.tangent,
+                    double: false,
+                    style,
+                    canopy: false,
+                    lantern: false,
+                });
+            }
+        }
+    }
+    None
 }
 
 /// A street door for each unit of a shared ground floor that has none, on the wall
@@ -3625,11 +3769,23 @@ fn render_entrance(
     for ((dx, dz), hinge) in &door_positions {
         let lower = cached_prop_block(
             base,
-            &[("half", "lower"), ("facing", facing), ("hinge", hinge)],
+            &[
+                ("half", "lower"),
+                ("facing", facing),
+                ("hinge", hinge),
+                ("open", "false"),
+                ("powered", "false"),
+            ],
         );
         let upper = cached_prop_block(
             base,
-            &[("half", "upper"), ("facing", facing), ("hinge", hinge)],
+            &[
+                ("half", "upper"),
+                ("facing", facing),
+                ("hinge", hinge),
+                ("open", "false"),
+                ("powered", "false"),
+            ],
         );
         editor.set_block_with_properties_absolute(
             lower,
@@ -4069,130 +4225,6 @@ fn report_wall_segments(
         segments.len(),
         ring.len(),
     );
-}
-
-/// Generates special doors for garages (double door) and sheds (single door)
-fn generate_special_doors(
-    editor: &mut WorldEditor,
-    element: &ProcessedWay,
-    config: &BuildingConfig,
-    wall_outline: &[(i32, i32)],
-    building_passages: &CoordinateBitmap,
-) {
-    if wall_outline.is_empty() {
-        return;
-    }
-
-    // Find the front-facing wall segment (longest or first significant segment)
-    // We'll use the first wall segment from the element nodes
-    let nodes = &element.nodes;
-    if nodes.len() < 2 {
-        return;
-    }
-
-    let mut rng = element_rng(element.id);
-    let door_y = config.start_y_offset + config.abs_terrain_offset + 1;
-
-    if config.has_garage_door {
-        // Place double spruce door on front face
-        // Find a suitable wall segment (first one with enough length)
-        for i in 0..nodes.len().saturating_sub(1) {
-            let (x1, z1) = (nodes[i].x, nodes[i].z);
-            let (x2, z2) = (nodes[i + 1].x, nodes[i + 1].z);
-
-            let dx = (x2 - x1).abs();
-            let dz = (z2 - z1).abs();
-            let segment_len = dx.max(dz);
-
-            // Need at least 2 blocks for double door
-            if segment_len >= 2 {
-                // Place doors in the middle of this segment
-                let mid_x = (x1 + x2) / 2;
-                let mid_z = (z1 + z2) / 2;
-
-                // Determine door offset based on wall orientation
-                let (door1_x, door1_z, door2_x, door2_z) = if dx > dz {
-                    // Wall runs along X axis
-                    (mid_x, mid_z, mid_x + 1, mid_z)
-                } else {
-                    // Wall runs along Z axis
-                    (mid_x, mid_z, mid_x, mid_z + 1)
-                };
-
-                // Skip placing doors inside a building passage, and on a
-                // photographed wall, which carries the door the photograph
-                // shows and not a procedural one.
-                if building_passages.contains(door1_x, door1_z)
-                    || building_passages.contains(door2_x, door2_z)
-                    || config.is_photo_column(door1_x, door1_z)
-                    || config.is_photo_column(door2_x, door2_z)
-                {
-                    continue;
-                }
-
-                // Place the double door (lower and upper parts)
-                // Use empty blacklist to overwrite existing wall blocks
-                editor.set_block_absolute(
-                    SPRUCE_DOOR_LOWER,
-                    door1_x,
-                    door_y,
-                    door1_z,
-                    None,
-                    Some(&[]),
-                );
-                editor.set_block_absolute(
-                    SPRUCE_DOOR_UPPER,
-                    door1_x,
-                    door_y + 1,
-                    door1_z,
-                    None,
-                    Some(&[]),
-                );
-                editor.set_block_absolute(
-                    SPRUCE_DOOR_LOWER,
-                    door2_x,
-                    door_y,
-                    door2_z,
-                    None,
-                    Some(&[]),
-                );
-                editor.set_block_absolute(
-                    SPRUCE_DOOR_UPPER,
-                    door2_x,
-                    door_y + 1,
-                    door2_z,
-                    None,
-                    Some(&[]),
-                );
-
-                break; // Only place one set of garage doors
-            }
-        }
-    } else if config.has_single_door {
-        // Place a single oak door somewhere on the wall
-        // Pick a random position from the wall outline
-        if !wall_outline.is_empty() {
-            let door_idx = rng.random_range(0..wall_outline.len());
-            let (door_x, door_z) = wall_outline[door_idx];
-
-            // Skip placing a door inside a building passage or on a
-            // photographed wall, which carries its own door.
-            if !building_passages.contains(door_x, door_z)
-                && !config.is_photo_column(door_x, door_z)
-            {
-                // Place single oak door (empty blacklist to overwrite wall blocks)
-                editor.set_block_absolute(OAK_DOOR, door_x, door_y, door_z, None, Some(&[]));
-                editor.set_block_absolute(
-                    OAK_DOOR_UPPER,
-                    door_x,
-                    door_y + 1,
-                    door_z,
-                    None,
-                    Some(&[]),
-                );
-            }
-        }
-    }
 }
 
 /// Determines which block to place at a specific wall position (wall, window, or accent)
@@ -7988,7 +8020,13 @@ pub fn generate_buildings(
     // stay clear of shutters, sills and pilasters.
     let mut entrance_plans = plan_mapped_entrances(element, &config, &facade, group_seed);
     if entrance_plans.is_empty() {
-        if let Some(plan) =
+        if config.has_garage_door || config.has_single_door {
+            if let Some(plan) =
+                plan_special_entrance(element, &config, &facade, effective_passages, group_seed)
+            {
+                entrance_plans.push(plan);
+            }
+        } else if let Some(plan) =
             plan_synthetic_entrance(element, &config, &facade, effective_passages, group_seed)
         {
             entrance_plans.push(plan);
@@ -8046,11 +8084,6 @@ pub fn generate_buildings(
                 );
             }
         }
-    }
-
-    // Generate special doors (garage doors, shed doors)
-    if config.has_garage_door || config.has_single_door {
-        generate_special_doors(editor, element, &config, &wall_outline, effective_passages);
     }
 
     // Entrance doors overwrite the freshly built wall columns.
@@ -13393,7 +13426,13 @@ mod facade_integration_tests {
     use clap::Parser as _;
     use fnv::FnvHashMap;
 
-    const DOOR_BLOCKS: &[Block] = &[OAK_DOOR, SPRUCE_DOOR_LOWER, DARK_OAK_DOOR_LOWER, BIRCH_DOOR];
+    const DOOR_BLOCKS: &[Block] = &[
+        OAK_DOOR,
+        SPRUCE_DOOR_LOWER,
+        DARK_OAK_DOOR_LOWER,
+        BIRCH_DOOR,
+        IRON_DOOR,
+    ];
 
     fn flat_args() -> Args {
         Args::parse_from([
@@ -13551,6 +13590,202 @@ mod facade_integration_tests {
         assert!(
             !street_doors,
             "no synthetic door once an entrance is mapped"
+        );
+    }
+
+    #[test]
+    fn entrance_no_does_not_suppress_a_preset_garage_door() {
+        let xz = XZBBox::rect_from_xz_lengths(60.0, 60.0).unwrap();
+        let road = bitmap_with_rect(&xz, 0, 12, 59, 14);
+        let footprints = CoordinateBitmap::new(&xz);
+        let mut way = rect_way(50, 20, 20, 40, 32, &[("building", "garage")]);
+        way.nodes[1].tags.insert("entrance".into(), "no".into());
+        let mut editor = test_editor(&xz);
+        run_building(&mut editor, &way, &road, &footprints);
+
+        let street_doors = (20..=40)
+            .filter(|&x| editor.check_for_block(x, 1, 20, Some(DOOR_BLOCKS)))
+            .count();
+        assert_eq!(
+            street_doors, 2,
+            "a negative entrance tag leaves the preset door enabled"
+        );
+    }
+
+    #[test]
+    fn special_garage_doors_use_the_street_wall_and_valid_paired_states() {
+        let xz = XZBBox::rect_from_xz_lengths(60.0, 60.0).unwrap();
+        let road = bitmap_with_rect(&xz, 0, 12, 59, 14);
+        let footprints = CoordinateBitmap::new(&xz);
+        let way = rect_way(46, 20, 20, 40, 32, &[("building", "garage")]);
+        let mut editor = test_editor(&xz);
+        run_building(&mut editor, &way, &road, &footprints);
+
+        let street_doors: Vec<i32> = (20..=40)
+            .filter(|&x| editor.check_for_block(x, 1, 20, Some(DOOR_BLOCKS)))
+            .collect();
+        assert_eq!(street_doors.len(), 2, "a garage gets a paired street door");
+        for x in &street_doors {
+            assert!(editor.check_for_block(*x, 2, 20, Some(DOOR_BLOCKS)));
+            assert_eq!(
+                editor.get_block_absolute(*x, 1, 20),
+                Some(SPRUCE_DOOR_LOWER)
+            );
+            assert_eq!(
+                editor.get_block_absolute(*x, 2, 20),
+                Some(SPRUCE_DOOR_LOWER)
+            );
+
+            let lower = editor
+                .block_properties_absolute(*x, 1, 20)
+                .expect("lower door states");
+            let upper = editor
+                .block_properties_absolute(*x, 2, 20)
+                .expect("upper door states");
+            for (properties, half) in [(&lower, "lower"), (&upper, "upper")] {
+                let fastnbt::Value::Compound(properties) = properties else {
+                    panic!("door states should be a compound");
+                };
+                assert_eq!(
+                    properties.get("half"),
+                    Some(&fastnbt::Value::String(half.into()))
+                );
+                assert_eq!(
+                    properties.get("facing"),
+                    Some(&fastnbt::Value::String("north".into()))
+                );
+                assert_eq!(
+                    properties.get("open"),
+                    Some(&fastnbt::Value::String("false".into()))
+                );
+                assert_eq!(
+                    properties.get("powered"),
+                    Some(&fastnbt::Value::String("false".into()))
+                );
+            }
+        }
+        let hinges: Vec<String> = street_doors
+            .iter()
+            .map(|x| {
+                let props = editor.block_properties_absolute(*x, 1, 20).unwrap();
+                let fastnbt::Value::Compound(props) = props else {
+                    panic!("door states should be a compound");
+                };
+                let Some(fastnbt::Value::String(hinge)) = props.get("hinge") else {
+                    panic!("door hinge should be a valid string state");
+                };
+                hinge.clone()
+            })
+            .collect();
+        assert!(hinges.contains(&"left".to_string()));
+        assert!(hinges.contains(&"right".to_string()));
+
+        let side_doors = (20..=32).any(|z| {
+            editor.check_for_block(20, 1, z, Some(DOOR_BLOCKS))
+                || editor.check_for_block(40, 1, z, Some(DOOR_BLOCKS))
+        });
+        let rear_doors = (20..=40).any(|x| editor.check_for_block(x, 1, 32, Some(DOOR_BLOCKS)));
+        assert!(!side_doors, "the garage should not have a side entrance");
+        assert!(!rear_doors, "the garage should not have a rear entrance");
+    }
+
+    #[test]
+    fn garage_door_moves_off_a_blocked_street_entrance() {
+        let xz = XZBBox::rect_from_xz_lengths(60.0, 60.0).unwrap();
+        let road = bitmap_with_rect(&xz, 0, 12, 59, 14);
+        let footprints = CoordinateBitmap::new(&xz);
+        let mut passages = CoordinateBitmap::new(&xz);
+        for x in 20..=40 {
+            passages.set(x, 20);
+        }
+        let way = rect_way(47, 20, 20, 40, 32, &[("building", "garage")]);
+        let mut editor = test_editor(&xz);
+        let cache = FloodFillCache::new();
+        let groups: FnvHashMap<u64, Vec<u64>> = FnvHashMap::default();
+        let ctx = BuildingContext {
+            flood_fill_cache: &cache,
+            building_passages: &passages,
+            road_mask: &road,
+            building_footprints: &footprints,
+            group_members: &groups,
+            interior_uses:
+                crate::element_processing::subprocessor::interior::InteriorUseIndex::empty(),
+        };
+        generate_buildings(&mut editor, &way, &flat_args(), None, None, &ctx, way.id);
+
+        let street_doors = (20..=40).any(|x| editor.check_for_block(x, 1, 20, Some(DOOR_BLOCKS)));
+        assert!(!street_doors, "doors must not occupy a building passage");
+        let fallback_door = (20..=32).any(|z| {
+            editor.check_for_block(20, 1, z, Some(DOOR_BLOCKS))
+                || editor.check_for_block(40, 1, z, Some(DOOR_BLOCKS))
+        }) || (20..=40)
+            .any(|x| editor.check_for_block(x, 1, 32, Some(DOOR_BLOCKS)));
+        assert!(fallback_door, "an open wall is a safe fallback entrance");
+    }
+
+    #[test]
+    fn door_materials_follow_building_use_and_wall_finish() {
+        let style = |category, wall| door_style_for(category, wall, 1234);
+        let house_stone = style(BuildingCategory::House, BRICK);
+        assert!(matches!(house_stone, DoorStyle::Oak | DoorStyle::DarkOak));
+        assert_eq!(house_stone, style(BuildingCategory::House, BRICK));
+        assert_eq!(
+            style(BuildingCategory::House, OAK_PLANKS),
+            DoorStyle::Spruce
+        );
+        assert_eq!(
+            style(BuildingCategory::Residential, BRICK),
+            DoorStyle::Spruce
+        );
+        assert_eq!(
+            style(BuildingCategory::Commercial, BRICK),
+            DoorStyle::DarkOak
+        );
+        assert_eq!(style(BuildingCategory::Office, BRICK), DoorStyle::DarkOak);
+        assert_eq!(style(BuildingCategory::Warehouse, BRICK), DoorStyle::Iron);
+        assert_eq!(style(BuildingCategory::Industrial, BRICK), DoorStyle::Iron);
+        assert_eq!(style(BuildingCategory::School, BRICK), DoorStyle::Birch);
+        assert_eq!(style(BuildingCategory::Hospital, BRICK), DoorStyle::Birch);
+    }
+
+    #[test]
+    fn restaurant_amenity_uses_the_storefront_door_category() {
+        let way = rect_way(
+            48,
+            20,
+            20,
+            40,
+            32,
+            &[("building", "yes"), ("amenity", "restaurant")],
+        );
+        assert_eq!(
+            BuildingCategory::from_element(&way, false, 12, way.id, 1.0),
+            BuildingCategory::Commercial
+        );
+    }
+
+    #[test]
+    fn entrance_facing_tracks_all_four_wall_normals() {
+        assert_eq!(facing_for_normal(1, 0), "east");
+        assert_eq!(facing_for_normal(-1, 0), "west");
+        assert_eq!(facing_for_normal(0, 1), "south");
+        assert_eq!(facing_for_normal(0, -1), "north");
+    }
+
+    #[test]
+    fn tiny_garages_without_room_for_an_entrance_stay_door_free() {
+        let xz = XZBBox::rect_from_xz_lengths(60.0, 60.0).unwrap();
+        let road = bitmap_with_rect(&xz, 0, 12, 59, 14);
+        let footprints = CoordinateBitmap::new(&xz);
+        let way = rect_way(49, 20, 20, 22, 22, &[("building", "garage")]);
+        let mut editor = test_editor(&xz);
+        run_building(&mut editor, &way, &road, &footprints);
+
+        let has_door = (19..=23)
+            .any(|x| (19..=23).any(|z| editor.check_for_block(x, 1, z, Some(DOOR_BLOCKS))));
+        assert!(
+            !has_door,
+            "the door must not float when the footprint is too small"
         );
     }
 
