@@ -49,6 +49,8 @@ GUI Build: ```cargo run --release```<br>
 | `geo-only` | OSM objects on flat ground |
 | `terrain-only` | Real elevation terrain, no objects at all (skips the OpenStreetMap query and the Overture fetch entirely, so `--overture` has no effect) |
 
+Moon worlds with enough room for a level site include one deterministic lunar research base with a glass dome, linked habitats, airlock, and solar arrays. On Earth, bunker structures are generated only from explicit OSM bunker tags (`military=bunker`, `building=bunker`, `bunker=*`, or `bunker_type=*`) when terrain leaves a safe build volume. ATMs use mapped `amenity=atm` features and may also be added at mapped banks, supermarkets, or commercial buildings explicitly tagged `atm=yes`; placement favors clear, street-facing wall positions.
+
 `--one-world` generates into one persistent Java world that every later run extends; `--output-dir` is then the saves folder and `--world-name` picks the world in it:
 
 ```

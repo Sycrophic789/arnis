@@ -97,7 +97,7 @@ pub fn generate_amenities(
                     place_furniture_decals(editor, element.tags(), pt.x, abs_y, pt.z);
                 }
             }
-            "vending_machine" | "atm" => {
+            "vending_machine" => {
                 if let Some(pt) = first_node {
                     editor.set_block(IRON_BLOCK, pt.x, 1, pt.z, None, None);
                     editor.set_block(IRON_BLOCK, pt.x, 2, pt.z, None, None);
@@ -106,6 +106,9 @@ pub fn generate_amenities(
                     place_furniture_decals(editor, element.tags(), pt.x, abs_y, pt.z);
                 }
             }
+            // ATM features are placed after terrain/building generation, when street-facing and
+            // clearance checks can use the completed world editor.
+            "atm" => {}
             "bicycle_parking" => {
                 // Honor an explicit surface=* tag; default to a wooden deck.
                 let ground_block: Block = element

@@ -301,6 +301,11 @@ fn process_element(
     still_surfaces: &water_areas::StillWaterSurfaces,
     interior_uses: &InteriorUseIndex,
 ) {
+    // Explicit bunker footprints are rendered in the post-ground pass so the
+    // interior is not filled back in by terrain generation.
+    if crate::structures::bunker::is_bunker(element.tags()) {
+        return;
+    }
     let signage = editor.signage_enabled();
     match element {
         ProcessedElement::Way(way) => {
@@ -913,6 +918,9 @@ pub fn generate_world_with_options(
 
     // Set ground reference in the editor to enable elevation-aware block placement
     editor.set_ground(Arc::clone(&ground));
+    // Plan the lunar habitat from deterministic terrain samples before tile processing so
+    // stream-to-disk generation can keep its destination region resident.
+    let moon_site = crate::structures::moon_base::find_site(&editor, &xzbbox, args.body);
     if let Some(ref tp) = tree_pack {
         editor.set_tree_pack(Arc::clone(tp));
     }
@@ -946,6 +954,26 @@ pub fn generate_world_with_options(
     let road_mask = Arc::new(highways::collect_road_surface_coords(
         &elements, &editor, &xzbbox, args.scale,
     ));
+
+    // These explicit map features are placed once after terrain filling. Only bank and
+    // supermarket venues receive an inferred ATM; other buildings need atm=yes or an ATM node.
+    let bunker_features = if args.body.is_earth() {
+        crate::structures::bunker::collect(&elements, &road_mask)
+    } else {
+        Vec::new()
+    };
+    let mut entrances: Vec<(i32, i32)> = elements
+        .iter()
+        .filter(|element| element.tags().contains_key("entrance"))
+        .flat_map(|element| element.nodes().map(|node| (node.x, node.z)))
+        .collect();
+    entrances.sort_unstable();
+    entrances.dedup();
+    let atm_features = if args.body.is_earth() {
+        crate::structures::atm::collect(&elements, &road_mask, &entrances)
+    } else {
+        Vec::new()
+    };
 
     // Roads plus every paved area footprint, resolved before anything is placed so
     // vegetation passes can tell a man-made surface from natural ground. With no
@@ -1111,6 +1139,15 @@ pub fn generate_world_with_options(
                 .unwrap_or_default();
             regions.extend(landmarks.deferred_region_keys(args.scale));
             regions.extend(planes.deferred_region_keys());
+            for feature in &bunker_features {
+                regions.extend(feature.deferred_region_keys());
+            }
+            for feature in &atm_features {
+                regions.extend(feature.deferred_region_keys());
+            }
+            if let Some(site) = moon_site {
+                regions.extend(crate::structures::moon_base::deferred_region_keys(site));
+            }
             regions
         } else {
             HashSet::new()
@@ -1697,7 +1734,6 @@ pub fn generate_world_with_options(
     // actually frees the bitmap.
     editor.release_sealed_surface();
     drop(sealed_surface);
-    drop(road_mask);
     drop(tunnel_footprint);
     drop(rail_mask);
     drop(big_water_field);
@@ -1738,6 +1774,16 @@ pub fn generate_world_with_options(
     if let Some(t) = landmarks_start {
         bench.report("landmark_place", t.elapsed());
     }
+    if args.body.is_earth() {
+        for feature in &bunker_features {
+            crate::structures::bunker::place(&mut editor, *feature, &road_mask, &xzbbox);
+        }
+        crate::structures::atm::place_all(&mut editor, &atm_features, &road_mask, &xzbbox);
+    }
+    if let Some(site) = moon_site {
+        crate::structures::moon_base::place(&mut editor, site);
+    }
+    drop(road_mask);
     bench.mark("post_passes");
 
     if eviction_active {
