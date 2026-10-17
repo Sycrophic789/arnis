@@ -263,7 +263,7 @@ mod tests {
         );
         assert_eq!(
             Some(WHITE_STAINED_GLASS),
-            ed.get_block_absolute(site.x + 5, site.deck_y + 1, site.z + 1)
+            ed.get_block_absolute(site.x + 6, site.deck_y + 1, site.z + 1)
         );
         assert_eq!(
             Some(BLUE_STAINED_GLASS),

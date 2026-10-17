@@ -401,7 +401,14 @@ pub fn place(
             door_z == z0 || door_z == z1
         };
         if wall_allowed {
-            editor.set_block_absolute(AIR, door_x, ground_y, door_z, Some(SURFACE_HOST), None);
+            editor.set_block_absolute(
+                AIR,
+                door_x,
+                ground_y,
+                door_z,
+                Some(&[DEEPSLATE_BRICKS, GRAY_CONCRETE]),
+                None,
+            );
             editor.set_block_with_properties_absolute(
                 door_block("lower", feature.entrance_facing),
                 door_x,
@@ -646,7 +653,7 @@ mod tests {
             ed.get_block_absolute(access.0, 1, access.1)
         );
         assert_eq!(Some(LADDER), ed.get_block_absolute(access.0, -4, access.1));
-        assert_eq!(Some(AIR), ed.get_block_absolute(20, -2, 20));
+        assert_eq!(None, ed.get_block_absolute(20, -2, 20));
         assert_eq!(Some(IRON_BARS), ed.get_block_absolute(17, -1, 17));
         assert_eq!(Some(IRON_BARS), ed.get_block_absolute(17, 0, 17));
         assert_eq!(
@@ -679,7 +686,7 @@ mod tests {
         };
 
         assert!(place(&mut ed, feature, &roads, &bbox));
-        assert_eq!(Some(AIR), ed.get_block_absolute(25, surface, 20));
+        assert_eq!(None, ed.get_block_absolute(25, surface, 20));
         assert_eq!(Some(IRON_DOOR), ed.get_block_absolute(25, surface + 1, 20));
         assert_eq!(Some(IRON_DOOR), ed.get_block_absolute(25, surface + 2, 20));
         assert_eq!(
