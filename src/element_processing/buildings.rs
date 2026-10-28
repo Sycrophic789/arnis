@@ -2667,15 +2667,18 @@ const GROUND_FLOOR_BONUS: i32 = 2;
 /// 830 m; values beyond this are usually an elevation mapped into `height`.
 const MAX_PLAUSIBLE_HEIGHT_M: f64 = 1000.0;
 
-/// Parses a `height` tag in meters, dropping values no building can have.
+/// Reads total building height, preferring `height` to the deprecated alias.
 fn parse_building_height_tag(tags: &HashMap<String, String>) -> Option<f64> {
-    let height = tags
-        .get("height")?
-        .trim_end_matches('m')
-        .trim()
-        .parse::<f64>()
-        .ok()?;
-    (height.is_finite() && height <= MAX_PLAUSIBLE_HEIGHT_M).then_some(height)
+    ["height", "building:height"]
+        .iter()
+        .filter_map(|key| parse_building_length_tag(tags, key))
+        .find(|height| *height > 0.0)
+}
+
+fn parse_building_length_tag(tags: &HashMap<String, String>, key: &str) -> Option<f64> {
+    tags.get(key)
+        .and_then(|value| crate::osm_parser::parse_length_m(value))
+        .filter(|length| *length >= 0.0 && *length <= MAX_PLAUSIBLE_HEIGHT_M)
 }
 
 /// Determines building height from OSM tags, falling back to per-type
@@ -2726,12 +2729,7 @@ fn calculate_building_height(
         has_explicit_height = true;
         has_source = true;
         let mut is_elevated_part = false;
-        let effective = if let Some(mh_str) = element.tags.get("min_height") {
-            let mh = mh_str
-                .trim_end_matches('m')
-                .trim()
-                .parse::<f64>()
-                .unwrap_or(0.0);
+        let effective = if let Some(mh) = parse_building_length_tag(&element.tags, "min_height") {
             is_elevated_part = mh > 0.0;
             (height - mh).max(1.0)
         } else if min_level > 0 {
@@ -2749,17 +2747,12 @@ fn calculate_building_height(
         let is_part = element.tags.contains_key("building:part");
         let wall_floor: f64 = if is_part { 1.0 } else { 3.0 };
         let effective = match (
-            element.tags.get("roof:height"),
+            parse_building_length_tag(&element.tags, "roof:height"),
             element.tags.get("roof:shape"),
         ) {
-            (Some(rh), Some(shape)) if shape != "flat" => {
+            (Some(rh), Some(shape)) if parse_roof_type(shape) != RoofType::Flat => {
                 // height includes the roof, a tagged roof:height comes off the walls
-                let rh = rh
-                    .trim_end_matches('m')
-                    .trim()
-                    .parse::<f64>()
-                    .unwrap_or(0.0);
-                (effective - rh.max(0.0)).max(wall_floor.min(effective))
+                (effective - rh).max(wall_floor.min(effective))
             }
             _ => effective,
         };
@@ -2902,14 +2895,10 @@ fn generate_roof_only_structure(
 
     // Determine where the roof structure starts vertically.
     // Priority: min_height → building:min_level → layer hint → default.
-    let min_level_offset = if let Some(mh) = element.tags.get("min_height") {
-        // min_height is in meters; convert via scale factor.
-        mh.trim_end_matches('m')
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(|h| (h * scale_factor) as i32)
-            .unwrap_or(0)
+    let min_level_offset = if let Some(mh) = parse_building_length_tag(&element.tags, "min_height")
+    {
+        // min_height is a distance from ground; convert its parsed OSM unit to blocks.
+        (mh * scale_factor) as i32
     } else if let Some(ml) = element.tags.get("building:min_level") {
         ml.parse::<i32>()
             .ok()
@@ -7419,13 +7408,9 @@ pub fn generate_buildings(
         ));
     }
 
-    let min_level_offset = if let Some(mh) = element.tags.get("min_height") {
-        mh.trim_end_matches('m')
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(|h| (h * scale_factor) as i32)
-            .unwrap_or(0)
+    let min_level_offset = if let Some(mh) = parse_building_length_tag(&element.tags, "min_height")
+    {
+        (mh * scale_factor) as i32
     } else if min_level > 0 {
         // Matches the levels height formula (cycle per level + 2) so a skybridge
         // floor lines up with the level tops of the buildings it connects
@@ -11107,11 +11092,7 @@ fn roof_peak_cap(
     ridge: &RidgeFrame,
     scale_factor: f64,
 ) -> Option<i32> {
-    if let Some(m) = tags
-        .get("roof:height")
-        .and_then(|v| v.trim_end_matches('m').trim().parse::<f64>().ok())
-        .filter(|m| *m > 0.0)
-    {
+    if let Some(m) = parse_building_length_tag(tags, "roof:height").filter(|m| *m > 0.0) {
         return Some(multiply_scale(m.round() as i32, scale_factor).max(1));
     }
 
@@ -12314,6 +12295,51 @@ mod height_tests {
         ]);
         let (h, _) = calculate_building_height(&way, "house", 0, 1.0, None, 3, 100, 1);
         assert_eq!(h, 12);
+
+        // OSM's combined feet/inches form applies to both total and roof height.
+        let way = way_with_tags(&[
+            ("height", "40'0\""),
+            ("roof:height", "10'0\""),
+            ("roof:shape", "gabled"),
+        ]);
+        let (h, _) = calculate_building_height(&way, "house", 0, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 9);
+    }
+
+    #[test]
+    fn deprecated_building_height_is_a_fallback_and_invalid_height_uses_levels() {
+        let way = way_with_tags(&[("height", "about 40"), ("building:height", "40 ft")]);
+        let (h, _) = calculate_building_height(&way, "yes", 0, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 12);
+
+        // The canonical key wins when both keys are valid.
+        let way = way_with_tags(&[("height", "8"), ("building:height", "40 ft")]);
+        let (h, _) = calculate_building_height(&way, "yes", 0, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 8);
+
+        let way = way_with_tags(&[("height", "about 40"), ("building:levels", "2")]);
+        let (h, _) = calculate_building_height(&way, "yes", 0, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 8);
+
+        let way = way_with_tags(&[("height", "0"), ("building:levels", "2")]);
+        let (h, _) = calculate_building_height(&way, "yes", 0, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 8);
+    }
+
+    #[test]
+    fn invalid_min_height_falls_back_to_building_min_level() {
+        let way = way_with_tags(&[
+            ("height", "30"),
+            ("min_height", "unknown"),
+            ("building:levels", "9"),
+            ("building:min_level", "2"),
+        ]);
+        let (h, _) = calculate_building_height(&way, "yes", 2, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 22); // 30m total minus the 2-level, 8m lift
+
+        let way = way_with_tags(&[("height", "40 ft"), ("min_height", "10 ft")]);
+        let (h, _) = calculate_building_height(&way, "yes", 0, 1.0, None, 3, 100, 1);
+        assert_eq!(h, 9); // 30 ft wall span, converted to about 9.1m
     }
 
     // A 5cm roof plate stays a thin slab instead of a 3-block band
@@ -12948,6 +12974,10 @@ mod style_tests {
                 18,
                 None
             ),
+            Some(3)
+        );
+        assert_eq!(
+            cap(&[("roof:height", "10'0\"")], RoofType::Gabled, 20, 18, None),
             Some(3)
         );
     }
