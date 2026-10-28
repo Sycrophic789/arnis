@@ -669,7 +669,8 @@ mod tests {
 
         // The S3DB building type still supplies the fallback when the use tag is absent.
         let p = plan(&[("building", "warehouse")], 3, 300, &[]);
-        assert_eq!(uses(&p), vec![vec![Use::Warehouse]; 3]);
+        assert!(p.open_hall);
+        assert_eq!(uses(&p), vec![vec![Use::Warehouse]]);
     }
 
     #[test]
@@ -681,7 +682,8 @@ mod tests {
                 300,
                 &[],
             );
-            assert_eq!(uses(&p), vec![vec![Use::Warehouse]; 2], "{use_value}");
+            assert!(p.open_hall, "{use_value}");
+            assert_eq!(uses(&p), vec![vec![Use::Warehouse]], "{use_value}");
         }
     }
 
