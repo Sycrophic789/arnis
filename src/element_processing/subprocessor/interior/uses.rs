@@ -320,6 +320,17 @@ pub fn use_from_building_type(building_type: &str, tags: &HashMap<String, String
     })
 }
 
+/// The present use of a building, which can differ from the physical type in `building=*`.
+fn use_from_building_use(tags: &HashMap<String, String>) -> Option<Use> {
+    let value = tag(tags, "building:use")?.trim().to_ascii_lowercase();
+    // A list of uses has no single dominant interior plan, so let the physical
+    // building type or the other mapped purpose tags decide instead.
+    if value.contains(';') || value.contains(',') {
+        return None;
+    }
+    use_from_building_type(&value, tags)
+}
+
 /// The use a surrounding area lends the plain `building=yes` outlines inside it.
 pub fn use_from_area(tags: &HashMap<String, String>) -> Option<Use> {
     if let Some(amenity) = tag(tags, "amenity") {
@@ -415,7 +426,9 @@ pub fn plan_interior(input: &PlanInputs) -> InteriorPlan {
         Some("hotel" | "hostel" | "guest_house" | "motel")
     )
     .then_some(Use::Hotel);
-    let typed = use_from_building_type(input.building_type, input.tags).or(lodging);
+    let typed = use_from_building_use(input.tags)
+        .or_else(|| use_from_building_type(input.building_type, input.tags))
+        .or(lodging);
     let area = input
         .area
         .filter(|u| typed.is_none() && area_use_fits(*u, input.footprint));
@@ -638,6 +651,38 @@ mod tests {
             ])),
             Some(Use::Worship(Faith::Jewish))
         );
+    }
+
+    #[test]
+    fn current_building_use_overrides_the_physical_type_for_interiors() {
+        // A former warehouse now used as housing should get a residential plan.
+        let p = plan(
+            &[("building", "warehouse"), ("building:use", "residential")],
+            3,
+            300,
+            &[],
+        );
+        assert_eq!(
+            uses(&p),
+            vec![vec![Use::Home], vec![Use::Home], vec![Use::Home]]
+        );
+
+        // The S3DB building type still supplies the fallback when the use tag is absent.
+        let p = plan(&[("building", "warehouse")], 3, 300, &[]);
+        assert_eq!(uses(&p), vec![vec![Use::Warehouse]; 3]);
+    }
+
+    #[test]
+    fn unknown_or_multiple_building_uses_fall_back_to_physical_type() {
+        for use_value in ["multi-purpose", "retail;residential"] {
+            let p = plan(
+                &[("building", "warehouse"), ("building:use", use_value)],
+                2,
+                300,
+                &[],
+            );
+            assert_eq!(uses(&p), vec![vec![Use::Warehouse]; 2], "{use_value}");
+        }
     }
 
     #[test]

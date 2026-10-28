@@ -76,6 +76,55 @@ fn filter_tags(mut tags: HashMap<String, String>) -> HashMap<String, String> {
     tags
 }
 
+/// Parses an OpenStreetMap length value as metres.
+///
+/// Supports the standard metre suffix, feet, and combined feet/inches notation
+/// used by `height`, `min_height`, and `roof:height` tags.
+pub(crate) fn parse_length_m(text: &str) -> Option<f64> {
+    fn number(text: &str) -> Option<f64> {
+        let value = text.trim().replace(',', ".");
+        if value.is_empty()
+            || !value
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | '+' | '-'))
+            || value.matches('.').count() > 1
+        {
+            return None;
+        }
+        let parsed = value.parse::<f64>().ok()?;
+        parsed.is_finite().then_some(parsed)
+    }
+
+    let text = text.trim();
+    if let Some((feet, inches)) = text.split_once('\'') {
+        if let Some(inches) = inches.strip_suffix('"') {
+            // OSM's combined form has no whitespace between the feet and inches.
+            if inches.chars().any(char::is_whitespace) {
+                return None;
+            }
+            let feet = number(feet)?;
+            let inches = number(inches)?;
+            if !(0.0..12.0).contains(&inches) {
+                return None;
+            }
+            let metres = feet * 0.3048 + inches * 0.0254;
+            return metres.is_finite().then_some(metres);
+        }
+    }
+
+    let split = text
+        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | ',' | '+' | '-')))
+        .unwrap_or(text.len());
+    let (value, unit) = text.split_at(split);
+    let value = number(value)?;
+    let unit = unit.trim().to_ascii_lowercase();
+    match unit.as_str() {
+        "" | "m" | "meter" | "meters" | "metre" | "metres" => Some(value),
+        "ft" | "feet" | "foot" | "'" => Some(value * 0.3048),
+        _ => None,
+    }
+}
+
 // Raw data from OSM
 
 #[derive(Debug, Deserialize)]

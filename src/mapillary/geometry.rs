@@ -133,28 +133,10 @@ pub fn bbox_polygon_xy(bbox: BBox, frame: &Frame, margin_m: f64) -> [[f64; 2]; 4
 
 // --------------------------------------------------------------------------- heights
 
-/// A length tag as metres. Accepts `12`, `12 m`, `12.5`, `12,5` and `40 ft`.
+/// A length tag as metres. The parser lives with OSM handling so building and
+/// Mapillary geometry use the same unit rules.
 pub fn parse_length_m(text: &str) -> Option<f64> {
-    let t = text.trim();
-    let split = t
-        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == ',' || c == '+' || c == '-'))
-        .unwrap_or(t.len());
-    let (num, rest) = t.split_at(split);
-    // The Python regex allows one sign, digits, and at most one decimal group.
-    let num = num.replace(',', ".");
-    if num.is_empty() || num.matches('.').count() > 1 {
-        return None;
-    }
-    let value: f64 = num.parse().ok()?;
-    let unit = rest.trim();
-    if !unit.chars().all(|c| c.is_ascii_alphabetic() || c == '\'') {
-        return None;
-    }
-    match unit.to_ascii_lowercase().as_str() {
-        "" | "m" | "meter" | "meters" | "metre" | "metres" => Some(value),
-        "ft" | "feet" | "foot" | "'" => Some(value * 0.3048),
-        _ => None,
-    }
+    crate::osm_parser::parse_length_m(text)
 }
 
 /// `(height, source, min_height)` from the tags.
@@ -169,11 +151,18 @@ pub fn height_from_tags(
     let mpl = params.metres_per_level;
     let mut height = None;
     let mut source = HeightSource::Default;
-    if let Some(h) = tags.get("height").and_then(|s| parse_length_m(s)) {
-        if h > 1.0 && h < 400.0 {
-            height = Some(h);
-            source = HeightSource::Tag;
-        }
+    if let Some(h) = tags
+        .get("height")
+        .and_then(|s| parse_length_m(s))
+        .filter(|h| *h > 1.0 && *h < 400.0)
+        .or_else(|| {
+            tags.get("building:height")
+                .and_then(|s| parse_length_m(s))
+                .filter(|h| *h > 1.0 && *h < 400.0)
+        })
+    {
+        height = Some(h);
+        source = HeightSource::Tag;
     }
     if height.is_none() {
         if let Some(levels) = tags
@@ -836,6 +825,10 @@ mod tests {
         assert_eq!(parse_length_m("12,5"), Some(12.5));
         assert_eq!(parse_length_m("12.5 metres"), Some(12.5));
         assert!((parse_length_m("40 ft").unwrap() - 12.192).abs() < 1e-9);
+        assert!((parse_length_m("7'4\"").unwrap() - 2.2352).abs() < 1e-9);
+        assert!((parse_length_m("11'").unwrap() - 3.3528).abs() < 1e-9);
+        assert_eq!(parse_length_m("11' 4\""), None);
+        assert_eq!(parse_length_m("7'12\""), None);
         assert_eq!(parse_length_m("about 12"), None);
         assert_eq!(parse_length_m("12 storeys"), None);
     }
@@ -848,6 +841,12 @@ mod tests {
         tags.insert("building:levels".into(), "4".into());
         let (h, src, _) = height_from_tags(&tags, &p);
         assert_eq!((h, src), (Some(18.0), HeightSource::Tag));
+
+        let mut tags = BTreeMap::new();
+        tags.insert("building:height".into(), "40 ft".into());
+        let (h, src, _) = height_from_tags(&tags, &p);
+        assert_eq!(src, HeightSource::Tag);
+        assert!((h.unwrap() - 12.192).abs() < 1e-9);
 
         let mut tags = BTreeMap::new();
         tags.insert("building:levels".into(), "5".into());
