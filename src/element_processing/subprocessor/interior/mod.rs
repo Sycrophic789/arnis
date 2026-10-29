@@ -1020,31 +1020,15 @@ mod tests {
         let first = build_with_seed(&xz, &elements, Some(41));
         let repeat = build_with_seed(&xz, &elements, Some(41));
         let other = build_with_seed(&xz, &elements, Some(42));
-        let wall_mask = |editor: &WorldEditor| {
-            let (x0, x1, z0, z1) = bbox(&way);
-            let wall = editor
-                .get_block_absolute(way.nodes[0].x, 3, way.nodes[0].z)
-                .map(|b| b.id());
-            (z0 + 1..z1)
-                .flat_map(|z| (x0 + 1..x1).map(move |x| (x, z)))
-                .map(|(x, z)| {
-                    wall.is_some_and(|id| {
-                        editor
-                            .get_block_absolute(x, 1, z)
-                            .is_some_and(|b| b.id() == id)
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-        let first_layout = wall_mask(&first);
-        assert!(
-            first_layout.iter().any(|&wall| wall),
-            "house partitions exist"
+        let first_layout = picture(&first, &way, 1);
+        assert_eq!(
+            first_layout,
+            picture(&repeat, &way, 1),
+            "same seed, same plan"
         );
-        assert_eq!(first_layout, wall_mask(&repeat), "same seed, same plan");
         assert_ne!(
             first_layout,
-            wall_mask(&other),
+            picture(&other, &way, 1),
             "different seeds vary the plan"
         );
     }
