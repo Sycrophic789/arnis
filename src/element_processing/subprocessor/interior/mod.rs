@@ -55,6 +55,8 @@ struct FloorCtx {
     floor: usize,
     floors: usize,
     seed: u64,
+    /// Stable for every storey and every tile of this building group.
+    plan_seed: u64,
     wood: Wood,
     /// Loot salt, per building.
     salt: u32,
@@ -119,6 +121,7 @@ pub fn generate_building_interior(editor: &mut WorldEditor, req: &InteriorReques
             floor: i,
             floors,
             seed: req.seed ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            plan_seed: req.seed,
             wood: wood_for(req.seed),
             salt: (min_x as u32).wrapping_mul(0x9E37_79B1) ^ (min_z as u32),
             origin: (min_x + 2, min_z + 2),
@@ -456,6 +459,14 @@ mod tests {
 
     /// Builds every building among `elements` with interiors on.
     fn build<'a>(xz: &'a XZBBox, elements: &[ProcessedElement]) -> WorldEditor<'a> {
+        build_with_seed(xz, elements, None)
+    }
+
+    fn build_with_seed<'a>(
+        xz: &'a XZBBox,
+        elements: &[ProcessedElement],
+        seed: Option<u64>,
+    ) -> WorldEditor<'a> {
         let mut editor = test_editor(xz);
         let cache = FloodFillCache::new();
         let passages = CoordinateBitmap::new_empty();
@@ -475,7 +486,15 @@ mod tests {
         for e in elements {
             if let ProcessedElement::Way(way) = e {
                 if way.tags.contains_key("building") {
-                    generate_buildings(&mut editor, way, &args, None, None, &ctx, way.id);
+                    generate_buildings(
+                        &mut editor,
+                        way,
+                        &args,
+                        None,
+                        None,
+                        &ctx,
+                        seed.unwrap_or(way.id),
+                    );
                 }
             }
         }
@@ -957,6 +976,110 @@ mod tests {
                 .any(|b| [CRAFTING_TABLE, FURNACE, BOOKSHELF, CAULDRON, ANVIL].contains(b)),
             "flats furnish the floor above"
         );
+    }
+
+    #[test]
+    fn small_and_irregular_homes_fall_back_to_cottage_furnishing() {
+        let examples = [
+            (
+                "narrow",
+                sized(
+                    31,
+                    10,
+                    6,
+                    &[("building", "house"), ("building:levels", "1")],
+                ),
+            ),
+            (
+                "L-shaped",
+                poly(
+                    32,
+                    &[(10, 10), (21, 10), (21, 15), (15, 15), (15, 21), (10, 21)],
+                    &[("building", "house"), ("building:levels", "1")],
+                ),
+            ),
+        ];
+        for (name, way) in examples {
+            let (xz, elements) = one(way, vec![]);
+            let editor = build(&xz, &elements);
+            let inside = blocks_at(&editor, way_of(&elements), 1);
+            assert!(has(&inside, RED_BED_NORTH_HEAD), "{name}: a bed fits");
+            assert!(has(&inside, FURNACE), "{name}: a kitchen fits");
+        }
+    }
+
+    #[test]
+    fn a_large_home_uses_a_repeatable_seeded_room_plan() {
+        let way = sized(
+            33,
+            38,
+            32,
+            &[("building", "apartments"), ("building:levels", "3")],
+        );
+        let (xz, elements) = one(way.clone(), vec![]);
+        let first = build_with_seed(&xz, &elements, Some(41));
+        let repeat = build_with_seed(&xz, &elements, Some(41));
+        let other = build_with_seed(&xz, &elements, Some(42));
+        let first_layout = picture(&first, &way, 1);
+        assert_eq!(
+            first_layout,
+            picture(&repeat, &way, 1),
+            "same seed, same plan"
+        );
+        assert_ne!(
+            first_layout,
+            picture(&other, &way, 1),
+            "different seeds vary the plan"
+        );
+    }
+
+    #[test]
+    fn incomplete_interior_inputs_leave_the_world_untouched() {
+        let xz = XZBBox::rect_from_xz_lengths(20.0, 20.0).unwrap();
+        let mut editor = test_editor(&xz);
+        let passages = CoordinateBitmap::new_empty();
+        let footprint = [(5, 5), (6, 5), (5, 6), (6, 6)];
+        let floor_levels = [0];
+        let empty = InteriorPlan {
+            floors: vec![],
+            open_hall: false,
+        };
+        let valid = InteriorPlan {
+            floors: vec![vec![]],
+            open_hall: false,
+        };
+        fn make_request<'a>(
+            footprint: &'a [(i32, i32)],
+            floor_levels: &'a [i32],
+            plan: &'a InteriorPlan,
+            passages: &'a CoordinateBitmap,
+        ) -> InteriorRequest<'a> {
+            InteriorRequest {
+                footprint,
+                floor_levels,
+                start_y_offset: 0,
+                building_height: 4,
+                abs_terrain_offset: 0,
+                wall_block: STONE,
+                plan,
+                abandoned: false,
+                passages,
+                entrances: &[],
+                bounds: ((5, 5), (6, 6)),
+                claims: &[],
+                scale: 1.0,
+                floor_block: OAK_PLANKS,
+                seed: 1,
+            }
+        }
+        for req in [
+            make_request(&[], &floor_levels, &valid, &passages),
+            make_request(&footprint, &[], &valid, &passages),
+            make_request(&footprint, &floor_levels, &empty, &passages),
+        ] {
+            generate_building_interior(&mut editor, &req);
+        }
+        assert!(editor.get_block_absolute(5, 1, 5).is_none());
     }
 
     #[test]

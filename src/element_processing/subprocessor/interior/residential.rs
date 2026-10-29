@@ -1,6 +1,6 @@
 //! Flats and houses: two hand-drawn floor plans tiled across the storey.
 
-use super::canvas::Canvas;
+use super::canvas::{mix, Canvas};
 use super::FloorCtx;
 use crate::block_definitions::*;
 use crate::element_processing::subprocessor::buildings_loot::chest_loot;
@@ -286,7 +286,14 @@ fn get_interior_block(c: char, is_layer2: bool, wall_block: Block) -> Option<Blo
     }
 }
 
-/// Tiles the house plan over one unit, shifted per storey.
+/// Stable per-building phase for the repeating house plan.
+fn plan_phase(seed: u64, width: i32, height: i32) -> (i32, i32) {
+    let x = mix(0, 0, seed ^ 0xA4D9_7C31_58E2_6B0F) % width as u64;
+    let z = mix(0, 0, seed ^ 0x6B17_E4A9_C203_5DF8) % height as u64;
+    (x as i32, z as i32)
+}
+
+/// Tiles the house plan over one unit, shifted per building and storey.
 pub(super) fn tile_floor(c: &mut Canvas, zone: u16, ctx: &FloorCtx, abandoned: bool) {
     let (layer1, layer2) = match (abandoned, ctx.floor == 0) {
         (true, true) => (&ABANDONED_INTERIOR1_LAYER1, &ABANDONED_INTERIOR1_LAYER2),
@@ -298,6 +305,7 @@ pub(super) fn tile_floor(c: &mut Canvas, zone: u16, ctx: &FloorCtx, abandoned: b
     let pw = layer1[0].len() as i32;
     let (pwu, phu) = (pw as usize, ph as usize);
     let shift = ctx.floor as i32;
+    let (phase_x, phase_z) = plan_phase(ctx.plan_seed, pw, ph);
     let chest_modulus = if abandoned { 160 } else { 128 };
     let wall = c.partition;
 
@@ -307,8 +315,8 @@ pub(super) fn tile_floor(c: &mut Canvas, zone: u16, ctx: &FloorCtx, abandoned: b
         if x < ox || z < oz || x > ctx.far.0 || z > ctx.far.1 || !c.is_free(x, z) {
             continue;
         }
-        let pxu = (x - ox + shift).rem_euclid(pw) as usize;
-        let pzu = (z - oz + shift).rem_euclid(ph) as usize;
+        let pxu = (x + shift + phase_x).rem_euclid(pw) as usize;
+        let pzu = (z + shift + phase_z).rem_euclid(ph) as usize;
         let cell1 = layer1[pzu][pxu];
         let cell2 = layer2[pzu][pxu];
 
@@ -347,5 +355,19 @@ pub(super) fn tile_floor(c: &mut Canvas, zone: u16, ctx: &FloorCtx, abandoned: b
                 c.put(x, dy, z, wall);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn house_plan_phase_is_stable_and_seeded() {
+        let first = plan_phase(41, 23, 23);
+        assert_eq!(first, plan_phase(41, 23, 23));
+        assert_ne!(first, plan_phase(42, 23, 23));
+        assert!((0..23).contains(&first.0));
+        assert!((0..23).contains(&first.1));
     }
 }

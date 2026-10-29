@@ -858,6 +858,13 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_floor_count_falls_back_to_one_safe_storey() {
+        let p = plan(&[("building", "house")], 0, 80, &[]);
+        assert_eq!(uses(&p), vec![vec![Use::Home]]);
+        assert!(!p.open_hall);
+    }
+
+    #[test]
     fn an_area_lends_its_use_to_plain_buildings_only() {
         let t = tags(&[("building", "yes")]);
         let p = plan_interior(&PlanInputs {
