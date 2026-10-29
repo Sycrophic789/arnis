@@ -337,10 +337,10 @@ pub fn place(editor: &mut WorldEditor, site: MoonSite) {
 
 fn dome_opening(dx: i32, dz: i32, radius: i32, layout: MoonBaseLayout) -> bool {
     let on_opening = |direction: Direction| match direction {
-        Direction::North => dz == -radius && dx.abs() <= 1,
-        Direction::East => dx == radius && dz.abs() <= 1,
-        Direction::South => dz == radius && dx.abs() <= 1,
-        Direction::West => dx == -radius && dz.abs() <= 1,
+        Direction::North => dz == -radius && dx == 0,
+        Direction::East => dx == radius && dz == 0,
+        Direction::South => dz == radius && dx == 0,
+        Direction::West => dx == -radius && dz == 0,
     };
     on_opening(Direction::South) || modules(layout).iter().any(|m| on_opening(m.connector))
 }
@@ -725,12 +725,44 @@ mod tests {
                     }
                 }
 
+                for module in modules(layout) {
+                    let (direction_x, direction_z) = module.connector.offset();
+                    let (tangent_x, tangent_z) = (-direction_z, direction_x);
+                    let (opening_x, opening_z) =
+                        local_to_world(site, direction_x * 5, direction_z * 5);
+                    assert_eq!(
+                        None,
+                        ed.get_block_absolute(opening_x, site.deck_y + 3, opening_z),
+                        "{layout:?} rotation {rotation} has a blocked inner dome opening"
+                    );
+                    for side in [-1, 1] {
+                        let (side_x, side_z) = local_to_world(
+                            site,
+                            direction_x * 5 + tangent_x * side,
+                            direction_z * 5 + tangent_z * side,
+                        );
+                        assert!(
+                            ed.get_block_absolute(side_x, site.deck_y + 3, side_z)
+                                .is_some(),
+                            "{layout:?} rotation {rotation} has a side gap beside a dome opening"
+                        );
+                    }
+                }
+
                 let (entry_x, entry_z) = local_to_world(site, 0, 6);
                 for dy in 1..=3 {
                     assert_eq!(
                         None,
                         ed.get_block_absolute(entry_x, site.deck_y + dy, entry_z),
                         "{layout:?} rotation {rotation} has a blocked dome entry"
+                    );
+                }
+                for side_x in [-1, 1] {
+                    let (side_x, side_z) = local_to_world(site, side_x, 5);
+                    assert!(
+                        ed.get_block_absolute(side_x, site.deck_y + 3, side_z)
+                            .is_some(),
+                        "{layout:?} rotation {rotation} has a side gap beside the airlock entrance"
                     );
                 }
             }
