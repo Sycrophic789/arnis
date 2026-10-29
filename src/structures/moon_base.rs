@@ -132,7 +132,7 @@ pub struct MoonSite {
 }
 
 fn half_extents(rotation: u8) -> (i32, i32) {
-    if rotation % 2 == 0 {
+    if rotation.is_multiple_of(2) {
         (SITE_HALF_X, SITE_HALF_Z)
     } else {
         (SITE_HALF_Z, SITE_HALF_X)
@@ -626,8 +626,8 @@ mod tests {
         let portrait = XZBBox::rect_from_min_max(0, 0, 22, 30).unwrap();
         let too_narrow = XZBBox::rect_from_min_max(0, 0, 21, 60).unwrap();
 
-        assert!(choose_rotation(&landscape).unwrap() % 2 == 0);
-        assert!(choose_rotation(&portrait).unwrap() % 2 == 1);
+        assert!(choose_rotation(&landscape).unwrap().is_multiple_of(2));
+        assert!(!choose_rotation(&portrait).unwrap().is_multiple_of(2));
         assert_eq!(None, choose_rotation(&too_narrow));
         assert_eq!(choose_rotation(&landscape), choose_rotation(&landscape));
     }
