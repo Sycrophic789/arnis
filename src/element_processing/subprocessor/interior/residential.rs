@@ -371,4 +371,3 @@ mod tests {
         assert!((0..23).contains(&first.1));
     }
 }
-

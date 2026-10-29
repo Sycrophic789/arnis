@@ -895,4 +895,3 @@ mod tests {
         assert_eq!(uses(&p), vec![vec![Use::Home]]);
     }
 }
-
